@@ -243,8 +243,8 @@ def send_email(subject: str, body: str) -> None:
 def main() -> None:
     print(f"[send_email] Running on {date.today()} UTC {datetime.now(timezone.utc).strftime('%H:%M')}")
 
-    if not check_et_time():
-        sys.exit(0)
+    # if not check_et_time():
+    #    sys.exit(0)
 
     nav_row    = get_latest_nav()
     nav        = float(nav_row["nav_per_share"])
