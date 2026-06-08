@@ -1,0 +1,36 @@
+name: Scrape PSUS NAV
+
+on:
+  schedule:
+    - cron: '0 18 * * 3'
+  workflow_dispatch:
+
+jobs:
+  scrape-nav:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run NAV scraper
+        run: python scripts/scrape_nav.py
+
+      - name: Commit updated database
+        run: |
+          git config user.name  "psus-tracker-bot"
+          git config user.email "actions@github.com"
+          git add data/psus_nav_database.csv
+          git diff --staged --quiet \
+            && echo "No changes to commit." \
+            || git commit -m "NAV update $(date -u +'%Y-%m-%d')" && git push
