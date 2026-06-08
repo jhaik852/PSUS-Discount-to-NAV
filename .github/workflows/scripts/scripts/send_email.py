@@ -1,86 +1,121 @@
 """
-send_email.py
+scrape_nav.py
 -------------
-Runs Mon-Fr via GitHub Actions (triggered at both 15:00 and 16:00 UTC).
-Checks whether it is currently 11 AM ET (accounting for EST/EDT).
-If yes: fetches the live PSUS price from Yahoo Finance, calculates the
-discount to the most recent published NAV, and sends the daily email.
-If no:  exits silently - the other UTC trigger will handle it.
+Runs every Wednesday via GitHub Actions.
+Scrapes the latest NAV from pershingsquareusa.com/performance/
+and appends it to the CSV database if it is new.
 """
 
+import requests
+from bs4 import BeautifulSoup
 import csv
 import os
-import smtplib
+import re
 import sys
-from datetime import date, datetime, timezone, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from datetime import datetime, date
 
-import yfinance as yf
+NAV_URL = "https://www.pershingsquareusa.com/performance/"
+CSV_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "psus_nav_database.csv")
 
-RECIPIENT      = "jhaik852@gmail.com"
-CSV_PATH       = os.path.join(os.path.dirname(__file__), "..", "data", "psus_nav_database.csv")
-TICKER         = "PSUS"
-TARGET_HOUR_ET = 11
+CURRENT_YEAR = date.today().year
 
 
-def is_dst(dt_utc: datetime) -> bool:
-    year = dt_utc.year
-    march_1   = datetime(year, 3, 1, tzinfo=timezone.utc)
-    dst_start = march_1 + timedelta(days=(6 - march_1.weekday()) % 7 + 7)
-    dst_start = dst_start.replace(hour=7)
-    nov_1     = datetime(year, 11, 1, tzinfo=timezone.utc)
-    dst_end   = nov_1 + timedelta(days=(6 - nov_1.weekday()) % 7)
-    dst_end   = dst_end.replace(hour=6)
-    return dst_start <= dt_utc < dst_end
-
-
-def et_hour(dt_utc: datetime) -> int:
-    offset = -4 if is_dst(dt_utc) else -5
-    return (dt_utc.hour + offset) % 24
-
-
-def check_et_time() -> bool:
-    now_utc = datetime.now(timezone.utc)
-    current_et_hour = et_hour(now_utc)
-    if current_et_hour != TARGET_HOUR_ET:
-        print(
-            f"[send_email] Current ET hour is {current_et_hour}:xx - "
-            f"not {TARGET_HOUR_ET} AM ET. Exiting silently."
+def fetch_page(url: str) -> str:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
         )
-        return False
-    return True
+    }
+    resp = requests.get(url, headers=headers, timeout=20)
+    resp.raise_for_status()
+    return resp.text
 
 
-def get_latest_nav() -> dict:
-    rows = []
-    with open(CSV_PATH, newline="") as f:
+def parse_nav_entries(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    items = [li.get_text(strip=True) for li in soup.find_all("li")]
+
+    entries = []
+    i = 0
+    while i < len(items):
+        if re.match(r"^\d{1,2}\s+[A-Za-z]+$", items[i]):
+            try:
+                raw_date  = items[i]
+                period    = items[i + 1]
+                nav_str   = items[i + 2]
+                nyse_str  = items[i + 3]
+
+                nav_value  = float(nav_str.replace("$", "").replace(",", ""))
+                nyse_value = float(nyse_str.replace("$", "").replace(",", ""))
+
+                nav_date = datetime.strptime(
+                    f"{raw_date} {CURRENT_YEAR}", "%d %B %Y"
+                ).date()
+
+                entries.append({
+                    "date":   str(nav_date),
+                    "period": period,
+                    "nav":    nav_value,
+                    "nyse":   nyse_value,
+                })
+                i += 4
+                continue
+            except (IndexError, ValueError):
+                pass
+        i += 1
+
+    return entries
+
+
+def load_existing_dates(csv_path: str) -> set:
+    if not os.path.exists(csv_path):
+        return set()
+    with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            if row["nav_per_share"].strip():
-                rows.append(row)
-    if not rows:
-        raise ValueError("No NAV data found in database.")
-    rows.sort(key=lambda r: r["date"], reverse=True)
-    return rows[0]
+        return {row["date"] for row in reader}
 
 
-def get_live_price() -> tuple[float, str]:
-    ticker = yf.Ticker(TICKER)
-    try:
-        price = ticker.fast_info["last_price"]
-        if price and price > 0:
-            return round(float(price), 2), "Yahoo Finance (last trade)"
-    except Exception:
-        pass
-    hist = ticker.history(period="2d")
-    if hist.empty:
-        raise ValueError("Yahoo Finance returned no price data for PSUS.")
-    price = round(float(hist["Close"].iloc[-1]), 2)
-    price_date = hist.index[-1].strftime("%Y-%m-%d")
-    return price, f"Yahoo Finance (close {price_date})"
+def append_to_csv(csv_path: str, entry: dict) -> None:
+    discount = round((entry["nyse"] / entry["nav"] - 1) * 100, 2)
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            entry["date"],
+            entry["period"],
+            entry["nav"],
+            entry["nyse"],
+            discount,
+        ])
 
 
-def append_daily_price(price: float, discount: float) -> None:
-    today_str = str(date.today())
-    rows
+def main() -> None:
+    print(f"[scrape_nav] Running on {date.today()}")
+
+    html = fetch_page(NAV_URL)
+    entries = parse_nav_entries(html)
+
+    if not entries:
+        print("[scrape_nav] ERROR: No NAV entries parsed — page layout may have changed.")
+        sys.exit(1)
+
+    existing_dates = load_existing_dates(CSV_PATH)
+    new_entries = [e for e in entries if e["date"] not in existing_dates]
+
+    if not new_entries:
+        print(f"[scrape_nav] No new entries found. Latest on page: {entries[0]['date']}")
+        return
+
+    for entry in sorted(new_entries, key=lambda x: x["date"]):
+        append_to_csv(CSV_PATH, entry)
+        discount = round((entry["nyse"] / entry["nav"] - 1) * 100, 2)
+        print(
+            f"[scrape_nav] Added {entry['date']} | {entry['period']} | "
+            f"NAV ${entry['nav']:.2f} | NYSE ${entry['nyse']:.2f} | "
+            f"Discount {discount:+.2f}%"
+        )
+
+
+if __name__ == "__main__":
+    main()
