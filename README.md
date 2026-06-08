@@ -1,4 +1,4 @@
-# PSUS NAV & Discount Tracker
+# PSUS NAV & Discount Tracker  June 2026
 
 Automated tracker for Pershing Square USA, Ltd. (NYSE: PSUS).
 
