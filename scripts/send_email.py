@@ -86,22 +86,21 @@ def get_latest_nav() -> dict:
 
 def get_live_price() -> tuple[float, str]:
     """
-    Fetch the most recent PSUS price from Yahoo Finance.
-    During market hours this is the latest trade price (up to 15-min delayed).
+    Fetch the last sale price during regular market hours from Yahoo Finance.
+    Uses 1-minute intraday bars with prepost=False (default) so pre/post-market
+    trades are excluded. Falls back to the most recent daily close.
     Returns (price, source_description).
     """
     ticker = yf.Ticker(TICKER)
 
-    # fast_info gives the most recent price without a full download
-    try:
-        price = ticker.fast_info["last_price"]
-        if price and price > 0:
-            return round(float(price), 2), "Yahoo Finance (last trade)"
-    except Exception:
-        pass
+    # 1-min bars for today's regular session only
+    hist = ticker.history(period="1d", interval="1m")
+    if not hist.empty:
+        price = round(float(hist["Close"].iloc[-1]), 2)
+        return price, "Yahoo Finance (regular market hours)"
 
-    # Fallback: last closing price from recent history
-    hist = ticker.history(period="2d")
+    # Fallback: most recent daily close
+    hist = ticker.history(period="5d")
     if hist.empty:
         raise ValueError("Yahoo Finance returned no price data for PSUS.")
     price = round(float(hist["Close"].iloc[-1]), 2)
