@@ -77,11 +77,13 @@ def parse_nav_entries(html: str) -> list[dict]:
 
 
 def load_existing_dates(csv_path: str) -> set:
+    """Return dates that already have a published NAV entry (non-empty nav_per_share).
+    Daily price-only rows must not block a NAV entry for the same date."""
     if not os.path.exists(csv_path):
         return set()
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
-        return {row["date"] for row in reader}
+        return {row["date"] for row in reader if row["nav_per_share"].strip()}
 
 
 def append_to_csv(csv_path: str, entry: dict) -> None:
